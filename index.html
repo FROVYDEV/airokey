@@ -63,8 +63,9 @@
         const pixelCanvas = document.createElement('canvas');
         const pixelCtx = pixelCanvas.getContext('2d');
 
-        pixelCanvas.width = 160;
-        pixelCanvas.height = 120;
+        // UPGRADE: Doubled the pixel matrix resolution to 320x240 for crisp high-density retro vibes
+        pixelCanvas.width = 320;
+        pixelCanvas.height = 240;
 
         let baseZoom = 1;
         function resizeCanvas() {
@@ -87,18 +88,22 @@
         const GOAL_WIDTH = W * 0.4;
         const BASE_VIEW_SIZE = 600;
 
-        const friction = 0.995; 
-        const malletRestitution = 1.1; 
+        const friction = 0.993; 
+        const malletRestitution = 1.15; 
         const wallRestitution = 0.85;   
-        const maxPuckSpeed = 18;
+        const maxPuckSpeed = 20;
 
         let scores = { p1: 0, p2: 0 };
         let mouseX = W / 2;
         let mouseY = H * 0.8; 
 
-        const puck = { x: W/2, y: H/2, vx: 4, vy: -6, radius: 15, color: '#ffffff', mass: 1 };
-        const player = { x: W/2, y: H*0.8, vx: 0, vy: 0, radius: 28, color: '#cccccc', mass: 6 };
-        const ai = { x: W/2, y: H*0.2, vx: 0, vy: 0, radius: 28, color: '#555555', mass: 6, maxSpeed: 6.5 };
+        const puck = { x: W/2, y: H/2, vx: 4, vy: -6, radius: 15, color: '#ffffff' };
+        const player = { x: W/2, y: H*0.8, vx: 0, vy: 0, radius: 28, color: '#cccccc' };
+        const ai = { x: W/2, y: H*0.2, vx: 0, vy: 0, radius: 28, color: '#555555', maxSpeed: 7.5 };
+
+        // AI Dynamic Tuning Parameters
+        let aiErrorX = 0;
+        let aiErrorTimer = 0;
 
         const confettiParticles = [];
         const carpetColors = ['#1a1a1a', '#262626', '#3d3d3d', '#555555', '#7a7a7a'];
@@ -138,7 +143,7 @@
 
         function drawPerspectiveCircle(x, tableY, radius, color) {
             let p = project(x, tableY);
-            if (p.scale <= 0) return; // Horizon clip safety
+            if (p.scale <= 0) return; 
 
             let rx = radius * p.scale;
             let ry = radius * p.scale * 0.6; 
@@ -173,7 +178,6 @@
             ctx.lineCap = 'round';
             confettiParticles.forEach(cp => {
                 let p = project(cp.x, cp.y);
-                // CRITICAL BUG FIX: Added p.scale > 0 check to prevent negative radius exceptions
                 if(p.scale > 0 && p.x > -100 && p.x < internalCanvas.width + 100 && p.y > -100 && p.y < internalCanvas.height + 100) {
                     ctx.save();
                     ctx.translate(p.x, p.y);
@@ -311,7 +315,7 @@
             let pProjY = (normY - internalCanvas.height/2) / camZoom + camTargetProj.y;
 
             let pctY = (pProjY - 120) / 380;
-            pctY = Math.max(-0.1, Math.min(1.1, pctY));
+            pctY = Math.max(-0.05, Math.min(1.05, pctY));
             mouseY = pctY * H;
 
             let pScale = 0.45 + 0.55 * pctY;
@@ -327,25 +331,38 @@
             puck.x = W / 2; puck.y = H / 2;
             puck.vx = 0; puck.vy = (winner === 'p1') ? -4 : 4; 
             ai.x = W / 2; ai.y = H * 0.2;
+            aiErrorX = 0;
         }
 
-        function checkCollision(c1, c2, force) {
-            let dx = c2.x - c1.x; let dy = c2.y - c1.y;
+        // UPGRADE: Kinematic Infinite-Mass Physics Engine. 
+        // Eliminates the bug where stationary mallets let the puck phase through.
+        function checkCollision(mallet, puckCircle, force) {
+            let dx = puckCircle.x - mallet.x;
+            let dy = puckCircle.y - mallet.y;
             let dist = Math.sqrt(dx * dx + dy * dy);
-            let minDist = c1.radius + c2.radius;
+            let minDist = mallet.radius + puckCircle.radius;
 
             if (dist < minDist) {
                 let overlap = minDist - dist;
-                let nx = dx / dist; let ny = dy / dist;
+                let nx = dx / dist;
+                let ny = dy / dist;
 
-                c1.x -= nx * (overlap / 2); c1.y -= ny * (overlap / 2);
-                c2.x += nx * (overlap / 2); c2.y += ny * (overlap / 2);
+                // The mallet has infinite structural mass relative to the puck.
+                // The puck absorbs 100% of the positional shift out of the overlap frame.
+                puckCircle.x += nx * overlap;
+                puckCircle.y += ny * overlap;
 
-                let kx = c1.vx - c2.vx; let ky = c1.vy - c2.vy;
-                let p = 2 * (nx * kx + ny * ky) / (c1.mass + c2.mass);
+                // Calculate relative movement speed metrics
+                let rvx = puckCircle.vx - mallet.vx;
+                let rvy = puckCircle.vy - mallet.vy;
+                let velAlongNormal = rvx * nx + rvy * ny;
 
-                c1.vx -= p * c2.mass * nx * force; c1.vy -= p * c2.mass * ny * force;
-                c2.vx += p * c1.mass * nx * force; c2.vy += p * c1.mass * ny * force;
+                // Bounce only if separating velocities dictate intersection depth increases
+                if (velAlongNormal < 0) {
+                    let impulseScalar = -(1 + force) * velAlongNormal;
+                    puckCircle.vx += impulseScalar * nx;
+                    puckCircle.vy += impulseScalar * ny;
+                }
             }
         }
 
@@ -358,18 +375,54 @@
             camY += (targetCamY - camY) * 0.08;
             camZoom += (desiredZoom - camZoom) * 0.05;
 
+            // --- UPGRADE: Humanized Tactical AI Engine ---
+            aiErrorTimer++;
+            if (aiErrorTimer > 40) { // Shifting tracking imprecision window
+                aiErrorTimer = 0;
+                aiErrorX = (Math.random() - 0.5) * 45; 
+            }
+
             let targetX = puck.x;
-            let targetY = Math.min(H/2 - ai.radius*2, puck.y - ai.radius);
-            let adx = targetX - ai.x; let ady = targetY - ai.y;
+            let targetY = H * 0.15; // Defensive Home position baseline
+
+            if (puck.y < H / 2) { 
+                // Attack Matrix: The puck is on the AI's zone
+                if (puck.y > ai.y) {
+                    // Puck is out front: Strike hard with calculated offset tracking imprecision
+                    targetX = puck.x + aiErrorX;
+                    targetY = puck.y;
+                } else {
+                    // Puck bypassed AI: Safely loop backward behind it to save clear shots
+                    targetX = puck.x;
+                    targetY = puck.y - 30;
+                }
+            } else {
+                // Defensive Matrix: The puck is far away. Shadow it's angle from safety zone
+                targetX = W / 2 + (puck.x - W / 2) * 0.6;
+                targetY = H * 0.15;
+            }
+
+            let adx = targetX - ai.x; 
+            let ady = targetY - ai.y;
             let aDist = Math.sqrt(adx*adx + ady*ady);
+
             if (aDist > 1) {
-                ai.vx = (adx / aDist) * ai.maxSpeed; ai.vy = (ady / aDist) * ai.maxSpeed;
-            } else { ai.vx = 0; ai.vy = 0; }
-            ai.x += ai.vx; ai.y += ai.vy;
+                ai.vx = (adx / aDist) * ai.maxSpeed; 
+                ai.vy = (ady / aDist) * ai.maxSpeed;
+            } else { 
+                ai.vx = 0; 
+                ai.vy = 0; 
+            }
+            ai.x += ai.vx; 
+            ai.y += ai.vy;
 
-            player.vx = mouseX - player.x; player.vy = mouseY - player.y;
-            player.x = mouseX; player.y = mouseY;
+            // Track Player delta momentum velocities for precise deflection physics pushes
+            player.vx = mouseX - player.x; 
+            player.vy = mouseY - player.y;
+            player.x = mouseX; 
+            player.y = mouseY;
 
+            // Boundary clamp safety parameters
             ai.x = Math.max(ai.radius, Math.min(W - ai.radius, ai.x));
             ai.y = Math.max(ai.radius, Math.min(H / 2 - ai.radius, ai.y));
             player.x = Math.max(player.radius, Math.min(W - player.radius, player.x));
