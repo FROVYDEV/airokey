@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cinematic 20K Pixel Air Hockey</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #030303;
+            font-family: monospace;
+            user-select: none;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #displayCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            cursor: none;
+            image-rendering: pixelated; 
+        }
+
+        #scoreBoard {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80%;
+            max-width: 600px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 24px;
+            font-weight: bold;
+            letter-spacing: 4px;
+            color: #fff;
+            z-index: 10;
+            text-shadow: 2px 2px 0px #000, -1px -1px 0px #000;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="scoreBoard">
+        <span id="p1Score">PLAYER: 0</span>
+        <span id="p2Score">CPU: 0</span>
+    </div>
+    <canvas id="displayCanvas"></canvas>
+
+    <script>
+        const displayCanvas = document.getElementById('displayCanvas');
+        const displayCtx = displayCanvas.getContext('2d');
+        const p1ScoreEl = document.getElementById('p1Score');
+        const p2ScoreEl = document.getElementById('p2Score');
+
+        const internalCanvas = document.createElement('canvas');
+        const ctx = internalCanvas.getContext('2d');
+
+        const pixelCanvas = document.createElement('canvas');
+        const pixelCtx = pixelCanvas.getContext('2d');
+
+        // Performance Fix: Hardcoded stable bounds for the 20k pixel grid
+        pixelCanvas.width = 160;
+        pixelCanvas.height = 120;
+
+        let baseZoom = 1;
+        function resizeCanvas() {
+            displayCanvas.width = window.innerWidth;
+            displayCanvas.height = window.innerHeight;
+            
+            // Cap internal workspace to safe HD limits to prevent high-DPI crashes
+            internalCanvas.width = Math.min(window.innerWidth, 1920);
+            internalCanvas.height = Math.min(window.innerHeight, 1080);
+
+            displayCtx.imageSmoothingEnabled = false;
+            pixelCtx.imageSmoothingEnabled = false;
+
+            baseZoom = internalCanvas.height / 750;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        const W = 400;  
+        const H = 700;  
+        const GOAL_WIDTH = W * 0.4;
+        const BASE_VIEW_SIZE = 600;
+
+        const friction = 0.995; 
+        const malletRestitution = 1.1; 
+        const wallRestitution = 0.85;   
+        const maxPuckSpeed = 18;
+
+        let scores = { p1: 0, p2: 0 };
+        let mouseX = W / 2;
+        let mouseY = H * 0.8; 
+
+        const puck = { x: W/2, y: H/2, vx: 4, vy: -6, radius: 15, color: '#ffffff', mass: 1 };
+        const player = { x: W/2, y: H*0.8, vx: 0, vy: 0, radius: 28, color: '#cccccc', mass: 6 };
+        const ai = { x: W/2, y: H*0.2, vx: 0, vy: 0, radius: 28, color: '#555555', mass: 6, maxSpeed: 6.5 };
+
+        const confettiParticles = [];
+        const carpetColors = ['#1a1a1a', '#262626', '#3d3d3d', '#555555', '#7a7a7a'];
+        
+        for (let i = 0; i < 300; i++) {
+            confettiParticles.push({
+                x: Math.random() * 2400 - 1000, 
+                y: Math.random() * 3000 - 1000,
+                size: Math.random() * 25 + 15, 
+                thickness: Math.random() * 10 + 6, 
+                angle: Math.random() * Math.PI * 2,
+                color: carpetColors[Math.floor(Math.random() * carpetColors.length)]
+            });
+        }
+
+        let camX = W / 2;
+        let camY = H / 2;
+        let camZoom = 1;
+
+        function originalProject(x, y) {
+            let pctY = y / H; 
+            let scale = 0.45 + 0.55 * pctY; 
+            let ox = (BASE_VIEW_SIZE / 2) + (x - W / 2) * scale;
+            let oy = 120 + pctY * 380; 
+            return { x: ox, y: oy, scale: scale };
+        }
+
+        function project(x, y) {
+            let pProj = originalProject(x, y);
+            let camTargetProj = originalProject(camX, camY);
+            
+            let screenX = (internalCanvas.width / 2) + (pProj.x - camTargetProj.x) * camZoom;
+            let screenY = (internalCanvas.height / 2) + (pProj.y - camTargetProj.y) * camZoom;
+            
+            return { x: screenX, y: screenY, scale: pProj.scale * camZoom };
+        }
+
+        function drawPerspectiveCircle(x, tableY, radius, color) {
+            let p = project(x, tableY);
+            let rx = radius * p.scale;
+            let ry = radius * p.scale * 0.6; 
+
+            ctx.save();
+            ctx.translate(p.x, p.y);
+
+            ctx.beginPath();
+            ctx.ellipse(0, 10 * p.scale, rx, ry, 0, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+            let grad = ctx.createRadialGradient(-rx*0.2, -ry*0.2, 0, 0, 0, rx);
+            grad.addColorStop(0, '#ffffff');
+            grad.addColorStop(0.2, color);
+            grad.addColorStop(1, '#111111');
+            ctx.fillStyle = grad;
+            ctx.fill();
+            
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 2 * camZoom;
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        function drawArcadeTable() {
+            ctx.fillStyle = '#060606';
+            ctx.fillRect(0, 0, internalCanvas.width, internalCanvas.height);
+            
+            ctx.lineCap = 'round';
+            confettiParticles.forEach(cp => {
+                let p = project(cp.x, cp.y);
+                if(p.x > -100 && p.x < internalCanvas.width + 100 && p.y > -100 && p.y < internalCanvas.height + 100) {
+                    ctx.save();
+                    ctx.translate(p.x, p.y);
+                    ctx.scale(1, 0.6); 
+                    ctx.rotate(cp.angle);
+                    ctx.beginPath();
+                    ctx.arc(0, 0, cp.size * p.scale, 0, Math.PI); 
+                    ctx.strokeStyle = cp.color;
+                    ctx.lineWidth = cp.thickness * p.scale;
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            });
+
+            let cTL = project(-40, -10);
+            let cTR = project(W + 40, -10);
+            let cBL = project(-40, H + 10);
+            let cBR = project(W + 40, H + 10);
+
+            ctx.fillStyle = '#0e0e0e';
+            ctx.strokeStyle = '#1a1a1a';
+            ctx.lineWidth = 2 * camZoom;
+            
+            ctx.fillRect(cTL.x - (8 * camZoom), cTL.y, 16 * camZoom, internalCanvas.height);
+            ctx.strokeRect(cTL.x - (8 * camZoom), cTL.y, 16 * camZoom, internalCanvas.height);
+            ctx.fillRect(cTR.x - (8 * camZoom), cTR.y, 16 * camZoom, internalCanvas.height);
+            ctx.strokeRect(cTR.x - (8 * camZoom), cTR.y, 16 * camZoom, internalCanvas.height);
+
+            ctx.fillStyle = '#111';
+            let legW = 24 * camZoom;
+            let extY = 40 * camZoom;
+            
+            ctx.beginPath();
+            ctx.moveTo(cBL.x, cBL.y + extY);
+            ctx.lineTo(cBL.x + legW, cBL.y + extY);
+            ctx.lineTo(cBL.x + legW*0.6, internalCanvas.height);
+            ctx.lineTo(cBL.x - legW*0.3, internalCanvas.height);
+            ctx.fill(); ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(cBR.x - legW, cBR.y + extY);
+            ctx.lineTo(cBR.x, cBR.y + extY);
+            ctx.lineTo(cBR.x + legW*0.3, internalCanvas.height);
+            ctx.lineTo(cBR.x - legW*0.6, internalCanvas.height);
+            ctx.fill(); ctx.stroke();
+
+            ctx.fillStyle = '#141414';
+            ctx.beginPath();
+            ctx.moveTo(cBL.x, cBL.y);
+            ctx.lineTo(cBR.x, cBR.y);
+            ctx.lineTo(cBR.x, cBR.y + extY);
+            ctx.lineTo(cBL.x, cBL.y + extY);
+            ctx.fill();
+
+            ctx.fillStyle = '#222';
+            ctx.beginPath();
+            ctx.moveTo(cTL.x, cTL.y);
+            ctx.lineTo(cTR.x, cTR.y);
+            ctx.lineTo(cBR.x, cBR.y);
+            ctx.lineTo(cBL.x, cBL.y);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = '#333';
+            ctx.stroke();
+
+            let pTL = project(0, 0);
+            let pTR = project(W, 0);
+            let pBL = project(0, H);
+            let pBR = project(W, H);
+
+            ctx.fillStyle = '#dcdcdc'; 
+            ctx.beginPath();
+            ctx.moveTo(pTL.x, pTL.y);
+            ctx.lineTo(pTR.x, pTR.y);
+            ctx.lineTo(pBR.x, pBR.y);
+            ctx.lineTo(pBL.x, pBL.y);
+            ctx.closePath();
+            ctx.fill();
+
+            let mL = project(0, H / 2);
+            let mR = project(W, H / 2);
+            ctx.strokeStyle = '#aaaaaa';
+            ctx.lineWidth = 4 * camZoom;
+            ctx.beginPath();
+            ctx.moveTo(mL.x, mL.y);
+            ctx.lineTo(mR.x, mR.y);
+            ctx.stroke();
+
+            let center = project(W / 2, H / 2);
+            ctx.save();
+            ctx.translate(center.x, center.y);
+            ctx.beginPath();
+            ctx.ellipse(0, 0, 70 * center.scale, 70 * center.scale * 0.6, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+
+            let gW = GOAL_WIDTH;
+            let gDepth = 15 * camZoom;
+            
+            let gL_top = project((W - gW) / 2, 0);
+            let gR_top = project((W + gW) / 2, 0);
+            ctx.fillStyle = '#0a0a0a';
+            ctx.beginPath();
+            ctx.moveTo(gL_top.x, gL_top.y);
+            ctx.lineTo(gR_top.x, gR_top.y);
+            ctx.lineTo(gR_top.x, gR_top.y - gDepth);
+            ctx.lineTo(gL_top.x, gL_top.y - gDepth);
+            ctx.fill();
+
+            let gL_bot = project((W - gW) / 2, H);
+            let gR_bot = project((W + gW) / 2, H);
+            ctx.fillStyle = '#0a0a0a';
+            ctx.beginPath();
+            ctx.moveTo(gL_bot.x, gL_bot.y);
+            ctx.lineTo(gR_bot.x, gR_bot.y);
+            ctx.lineTo(gR_bot.x, gR_bot.y + gDepth);
+            ctx.lineTo(gL_bot.x, gL_bot.y + gDepth);
+            ctx.fill();
+        }
+
+        displayCanvas.addEventListener('mousemove', (e) => {
+            const rect = displayCanvas.getBoundingClientRect();
+            const canvasX = e.clientX - rect.left;
+            const canvasY = e.clientY - rect.top;
+
+            // Mathematical normalization adjustment across scaled resolution boundary
+            const normX = canvasX * (internalCanvas.width / displayCanvas.width);
+            const normY = canvasY * (internalCanvas.height / displayCanvas.height);
+
+            let camTargetProj = originalProject(camX, camY);
+            let pProjX = (normX - internalCanvas.width/2) / camZoom + camTargetProj.x;
+            let pProjY = (normY - internalCanvas.height/2) / camZoom + camTargetProj.y;
+
+            let pctY = (pProjY - 120) / 380;
+            pctY = Math.max(-0.1, Math.min(1.1, pctY));
+            mouseY = pctY * H;
+
+            let pScale = 0.45 + 0.55 * pctY;
+            mouseX = (pProjX - (BASE_VIEW_SIZE / 2)) / pScale + (W / 2);
+        });
+
+        function updateScore() {
+            p1ScoreEl.innerText = `PLAYER: ${scores.p1}`;
+            p2ScoreEl.innerText = `CPU: ${scores.p2}`;
+        }
+
+        function resetTable(winner) {
+            puck.x = W / 2; puck.y = H / 2;
+            puck.vx = 0; puck.vy = (winner === 'p1') ? -4 : 4; 
+            ai.x = W / 2; ai.y = H * 0.2;
+        }
+
+        function checkCollision(c1, c2, force) {
+            let dx = c2.x - c1.x; let dy = c2.y - c1.y;
+            let dist = Math.sqrt(dx * dx + dy * dy);
+            let minDist = c1.radius + c2.radius;
+
+            if (dist < minDist) {
+                let overlap = minDist - dist;
+                let nx = dx / dist; let ny = dy / dist;
+
+                c1.x -= nx * (overlap / 2); c1.y -= ny * (overlap / 2);
+                c2.x += nx * (overlap / 2); c2.y += ny * (overlap / 2);
+
+                let kx = c1.vx - c2.vx; let ky = c1.vy - c2.vy;
+                let p = 2 * (nx * kx + ny * ky) / (c1.mass + c2.mass);
+
+                c1.vx -= p * c2.mass * nx * force; c1.vy -= p * c2.mass * ny * force;
+                c2.vx += p * c1.mass * nx * force; c2.vy += p * c1.mass * ny * force;
+            }
+        }
+
+        function animate() {
+            let targetCamX = W/2 + (puck.x - W/2) * 0.4;
+            let targetCamY = puck.y * 0.6 + H * 0.3; 
+            let desiredZoom = baseZoom * (1.35 - (puck.y / H) * 0.45);
+
+            camX += (targetCamX - camX) * 0.08;
+            camY += (targetCamY - camY) * 0.08;
+            camZoom += (desiredZoom - camZoom) * 0.05;
+
+            let targetX = puck.x;
+            let targetY = Math.min(H/2 - ai.radius*2, puck.y - ai.radius);
+            let adx = targetX - ai.x; let ady = targetY - ai.y;
+            let aDist = Math.sqrt(adx*adx + ady*ady);
+            if (aDist > 1) {
+                ai.vx = (adx / aDist) * ai.maxSpeed; ai.vy = (ady / aDist) * ai.maxSpeed;
+            } else { ai.vx = 0; ai.vy = 0; }
+            ai.x += ai.vx; ai.y += ai.vy;
+
+            player.vx = mouseX - player.x; player.vy = mouseY - player.y;
+            player.x = mouseX; player.y = mouseY;
+
+            ai.x = Math.max(ai.radius, Math.min(W - ai.radius, ai.x));
+            ai.y = Math.max(ai.radius, Math.min(H / 2 - ai.radius, ai.y));
+            player.x = Math.max(player.radius, Math.min(W - player.radius, player.x));
+            player.y = Math.max(H / 2 + player.radius, Math.min(H - player.radius, player.y));
+
+            puck.vx *= friction; puck.vy *= friction;
+            puck.x += puck.vx; puck.y += puck.vy;
+
+            let currentSpeed = Math.sqrt(puck.vx*puck.vx + puck.vy*puck.vy);
+            if (currentSpeed > maxPuckSpeed) {
+                puck.vx = (puck.vx / currentSpeed) * maxPuckSpeed;
+                puck.vy = (puck.vy / currentSpeed) * maxPuckSpeed;
+            }
+
+            if (puck.x - puck.radius < 0) { puck.x = puck.radius; puck.vx = -puck.vx * wallRestitution; }
+            else if (puck.x + puck.radius > W) { puck.x = W - puck.radius; puck.vx = -puck.vx * wallRestitution; }
+
+            let gXStart = (W - GOAL_WIDTH) / 2;
+            let gXEnd = gXStart + GOAL_WIDTH;
+
+            if (puck.y - puck.radius < 0) {
+                if (puck.x > gXStart && puck.x < gXEnd) { scores.p1++; updateScore(); resetTable('p1'); }
+                else { puck.y = puck.radius; puck.vy = -puck.vy * wallRestitution; }
+            } else if (puck.y + puck.radius > H) {
+                if (puck.x > gXStart && puck.x < gXEnd) { scores.p2++; updateScore(); resetTable('p2'); }
+                else { puck.y = H - puck.radius; puck.vy = -puck.vy * wallRestitution; }
+            }
+
+            checkCollision(player, puck, malletRestitution);
+            checkCollision(ai, puck, malletRestitution);
+
+            ctx.clearRect(0, 0, internalCanvas.width, internalCanvas.height);
+            
+            drawArcadeTable();
+            drawPerspectiveCircle(ai.x, ai.y, ai.radius, ai.color);
+            drawPerspectiveCircle(puck.x, puck.y, puck.radius, puck.color);
+            drawPerspectiveCircle(player.x, player.y, player.radius, player.color);
+
+            pixelCtx.drawImage(internalCanvas, 0, 0, pixelCanvas.width, pixelCanvas.height);
+            displayCtx.drawImage(pixelCanvas, 0, 0, displayCanvas.width, displayCanvas.height);
+
+            requestAnimationFrame(animate);
+        }
+
+        updateScore();
+        animate();
+    </script>
+</body>
+</html>
