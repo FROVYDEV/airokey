@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cinematic 20K Pixel Air Hockey</title>
+    <title>Cinematic Pixel Air Hockey</title>
     <style>
         body {
             margin: 0;
@@ -40,6 +40,64 @@
             color: #fff;
             z-index: 10;
             text-shadow: 2px 2px 0px #000, -1px -1px 0px #000;
+            display: none; /* Hidden until game starts */
+        }
+
+        /* Menu Overlays */
+        .menu-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(5, 5, 5, 0.85);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 20;
+            color: white;
+            text-align: center;
+        }
+
+        .menu-title {
+            font-size: 42px;
+            letter-spacing: 6px;
+            margin-bottom: 10px;
+            text-shadow: 0 0 10px #fff;
+            font-weight: bold;
+        }
+
+        .menu-subtitle {
+            font-size: 16px;
+            color: #888;
+            margin-bottom: 40px;
+            letter-spacing: 2px;
+        }
+
+        .arcade-btn {
+            background: #222;
+            color: #fff;
+            border: 3px solid #fff;
+            padding: 15px 40px;
+            font-size: 20px;
+            font-family: monospace;
+            font-weight: bold;
+            letter-spacing: 3px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 0 15px rgba(255,255,255,0.2);
+        }
+
+        .arcade-btn:hover {
+            background: #fff;
+            color: #000;
+            box-shadow: 0 0 25px rgba(255,255,255,0.6);
+        }
+
+        #gameOverMenu {
+            display: none;
+            background: rgba(10, 5, 5, 0.9);
         }
     </style>
 </head>
@@ -49,6 +107,19 @@
         <span id="p1Score">PLAYER: 0</span>
         <span id="p2Score">CPU: 0</span>
     </div>
+
+    <div id="startMenu" class="menu-overlay">
+        <div class="menu-title">AIR HOCKEY</div>
+        <div class="menu-subtitle">240P CINEMATIC ARCADE EDITION</div>
+        <button class="arcade-btn" onclick="startGame()">START GAME</button>
+    </div>
+
+    <div id="gameOverMenu" class="menu-overlay">
+        <div id="winLossText" class="menu-title">YOU WIN!</div>
+        <div class="menu-subtitle">MATCH CONCLUDED (FIRST TO 5)</div>
+        <button class="arcade-btn" onclick="restartToMenu()">MAIN MENU</button>
+    </div>
+
     <canvas id="displayCanvas"></canvas>
 
     <script>
@@ -56,6 +127,10 @@
         const displayCtx = displayCanvas.getContext('2d');
         const p1ScoreEl = document.getElementById('p1Score');
         const p2ScoreEl = document.getElementById('p2Score');
+        const scoreBoard = document.getElementById('scoreBoard');
+        const startMenu = document.getElementById('startMenu');
+        const gameOverMenu = document.getElementById('gameOverMenu');
+        const winLossText = document.getElementById('winLossText');
 
         const internalCanvas = document.createElement('canvas');
         const ctx = internalCanvas.getContext('2d');
@@ -63,9 +138,11 @@
         const pixelCanvas = document.createElement('canvas');
         const pixelCtx = pixelCanvas.getContext('2d');
 
-        // UPGRADE: Doubled the pixel matrix resolution to 320x240 for crisp high-density retro vibes
         pixelCanvas.width = 320;
         pixelCanvas.height = 240;
+
+        // System States: 'MENU', 'PLAYING', 'GAMEOVER'
+        let gameState = 'MENU';
 
         let baseZoom = 1;
         function resizeCanvas() {
@@ -97,13 +174,114 @@
         let mouseX = W / 2;
         let mouseY = H * 0.8; 
 
-        const puck = { x: W/2, y: H/2, vx: 4, vy: -6, radius: 15, color: '#ffffff' };
+        const puck = { x: W/2, y: H/2, vx: 0, vy: 4, radius: 15, color: '#ffffff' };
         const player = { x: W/2, y: H*0.8, vx: 0, vy: 0, radius: 28, color: '#cccccc' };
-        const ai = { x: W/2, y: H*0.2, vx: 0, vy: 0, radius: 28, color: '#555555', maxSpeed: 7.5 };
+        const ai = { x: W/2, y: H*0.2, vx: 0, vy: 0, radius: 28, color: '#555555', maxSpeed: 7.2 };
 
-        // AI Dynamic Tuning Parameters
         let aiErrorX = 0;
         let aiErrorTimer = 0;
+
+        // Web Audio Context Synthesizer Engine
+        let audioCtx = null;
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
+
+        function playSound(type) {
+            if (!audioCtx) return;
+            
+            // Resume if suspended by browser security configurations
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+
+            const osc = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            osc.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            
+            const time = audioCtx.currentTime;
+
+            if (type === 'hit_player') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(200, time);
+                osc.frequency.exponentialRampToValueAtTime(450, time + 0.08);
+                gainNode.gain.setValueAtTime(0.25, time);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.08);
+                osc.start(time);
+                osc.stop(time + 0.08);
+            } 
+            else if (type === 'hit_ai') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(180, time);
+                osc.frequency.exponentialRampToValueAtTime(350, time + 0.08);
+                gainNode.gain.setValueAtTime(0.25, time);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.08);
+                osc.start(time);
+                osc.stop(time + 0.08);
+            } 
+            else if (type === 'wall') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(120, time);
+                gainNode.gain.setValueAtTime(0.15, time);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.06);
+                osc.start(time);
+                osc.stop(time + 0.06);
+            } 
+            else if (type === 'goal') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(220, time);
+                osc.frequency.linearRampToValueAtTime(110, time + 0.3);
+                gainNode.gain.setValueAtTime(0.3, time);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.35);
+                osc.start(time);
+                osc.stop(time + 0.35);
+            }
+            else if (type === 'match_win') {
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(293.66, time); // D4
+                osc.frequency.setValueAtTime(349.23, time + 0.1); // F4
+                osc.frequency.setValueAtTime(440.00, time + 0.2); // A4
+                osc.frequency.setValueAtTime(587.33, time + 0.3); // D5
+                gainNode.gain.setValueAtTime(0.2, time);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.5);
+                osc.start(time);
+                osc.stop(time + 0.5);
+            }
+            else if (type === 'match_lose') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(220, time);
+                osc.frequency.setValueAtTime(164.81, time + 0.15);
+                osc.frequency.setValueAtTime(146.83, time + 0.3);
+                gainNode.gain.setValueAtTime(0.25, time);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.6);
+                osc.start(time);
+                osc.stop(time + 0.6);
+            }
+        }
+
+        // State Machine Switch Calls
+        function startGame() {
+            initAudio();
+            scores.p1 = 0;
+            scores.p2 = 0;
+            updateScore();
+            resetTable('p1');
+            startMenu.style.display = 'none';
+            scoreBoard.style.display = 'flex';
+            gameState = 'PLAYING';
+        }
+
+        function restartToMenu() {
+            gameOverMenu.style.display = 'none';
+            startMenu.style.display = 'flex';
+            scoreBoard.style.display = 'none';
+            gameState = 'MENU';
+            resetTable('p1');
+        }
 
         const confettiParticles = [];
         const carpetColors = ['#1a1a1a', '#262626', '#3d3d3d', '#555555', '#7a7a7a'];
@@ -303,6 +481,8 @@
         }
 
         displayCanvas.addEventListener('mousemove', (e) => {
+            if (gameState !== 'PLAYING') return;
+
             const rect = displayCanvas.getBoundingClientRect();
             const canvasX = e.clientX - rect.left;
             const canvasY = e.clientY - rect.top;
@@ -325,18 +505,31 @@
         function updateScore() {
             p1ScoreEl.innerText = `PLAYER: ${scores.p1}`;
             p2ScoreEl.innerText = `CPU: ${scores.p2}`;
+
+            // Check match victory constraints (First to 5 wins)
+            if (scores.p1 >= 5) {
+                gameState = 'GAMEOVER';
+                winLossText.innerText = "YOU WIN!";
+                winLossText.style.color = "#00ffcc";
+                gameOverMenu.style.display = 'flex';
+                playSound('match_win');
+            } else if (scores.p2 >= 5) {
+                gameState = 'GAMEOVER';
+                winLossText.innerText = "CPU WINS";
+                winLossText.style.color = "#ff3333";
+                gameOverMenu.style.display = 'flex';
+                playSound('match_lose');
+            }
         }
 
-        function resetTable(winner) {
+        function resetTable(winnerName) {
             puck.x = W / 2; puck.y = H / 2;
-            puck.vx = 0; puck.vy = (winner === 'p1') ? -4 : 4; 
+            puck.vx = 0; puck.vy = (winnerName === 'p1') ? -4 : 4; 
             ai.x = W / 2; ai.y = H * 0.2;
             aiErrorX = 0;
         }
 
-        // UPGRADE: Kinematic Infinite-Mass Physics Engine. 
-        // Eliminates the bug where stationary mallets let the puck phase through.
-        function checkCollision(mallet, puckCircle, force) {
+        function checkCollision(mallet, puckCircle, force, isPlayer) {
             let dx = puckCircle.x - mallet.x;
             let dy = puckCircle.y - mallet.y;
             let dist = Math.sqrt(dx * dx + dy * dy);
@@ -347,21 +540,21 @@
                 let nx = dx / dist;
                 let ny = dy / dist;
 
-                // The mallet has infinite structural mass relative to the puck.
-                // The puck absorbs 100% of the positional shift out of the overlap frame.
                 puckCircle.x += nx * overlap;
                 puckCircle.y += ny * overlap;
 
-                // Calculate relative movement speed metrics
                 let rvx = puckCircle.vx - mallet.vx;
                 let rvy = puckCircle.vy - mallet.vy;
                 let velAlongNormal = rvx * nx + rvy * ny;
 
-                // Bounce only if separating velocities dictate intersection depth increases
                 if (velAlongNormal < 0) {
                     let impulseScalar = -(1 + force) * velAlongNormal;
                     puckCircle.vx += impulseScalar * nx;
                     puckCircle.vy += impulseScalar * ny;
+                    
+                    if (gameState === 'PLAYING') {
+                        playSound(isPlayer ? 'hit_player' : 'hit_ai');
+                    }
                 }
             }
         }
@@ -375,85 +568,100 @@
             camY += (targetCamY - camY) * 0.08;
             camZoom += (desiredZoom - camZoom) * 0.05;
 
-            // --- UPGRADE: Humanized Tactical AI Engine ---
-            aiErrorTimer++;
-            if (aiErrorTimer > 40) { // Shifting tracking imprecision window
-                aiErrorTimer = 0;
-                aiErrorX = (Math.random() - 0.5) * 45; 
-            }
-
-            let targetX = puck.x;
-            let targetY = H * 0.15; // Defensive Home position baseline
-
-            if (puck.y < H / 2) { 
-                // Attack Matrix: The puck is on the AI's zone
-                if (puck.y > ai.y) {
-                    // Puck is out front: Strike hard with calculated offset tracking imprecision
-                    targetX = puck.x + aiErrorX;
-                    targetY = puck.y;
-                } else {
-                    // Puck bypassed AI: Safely loop backward behind it to save clear shots
-                    targetX = puck.x;
-                    targetY = puck.y - 30;
+            // Run Physics Processing only if match is active
+            if (gameState === 'PLAYING') {
+                
+                // AI Imprecision Update Cycles
+                aiErrorTimer++;
+                if (aiErrorTimer > 40) { 
+                    aiErrorTimer = 0;
+                    aiErrorX = (Math.random() - 0.5) * 55; // Sightly widened tracking variance window
                 }
-            } else {
-                // Defensive Matrix: The puck is far away. Shadow it's angle from safety zone
-                targetX = W / 2 + (puck.x - W / 2) * 0.6;
-                targetY = H * 0.15;
+
+                let targetX = puck.x;
+                let targetY = H * 0.15; 
+
+                if (puck.y < H / 2) { 
+                    if (puck.y > ai.y) {
+                        targetX = puck.x + aiErrorX;
+                        targetY = puck.y;
+                    } else {
+                        targetX = puck.x;
+                        targetY = puck.y - 30;
+                    }
+                } else {
+                    targetX = W / 2 + (puck.x - W / 2) * 0.6;
+                    targetY = H * 0.15;
+                }
+
+                let adx = targetX - ai.x; 
+                let ady = targetY - ai.y;
+                let aDist = Math.sqrt(adx*adx + ady*ady);
+
+                if (aDist > 1) {
+                    ai.vx = (adx / aDist) * ai.maxSpeed; 
+                    ai.vy = (ady / aDist) * ai.maxSpeed;
+                } else { 
+                    ai.vx = 0; ai.vy = 0; 
+                }
+                ai.x += ai.vx; 
+                ai.y += ai.vy;
+
+                player.vx = mouseX - player.x; 
+                player.vy = mouseY - player.y;
+                player.x = mouseX; 
+                player.y = mouseY;
+
+                ai.x = Math.max(ai.radius, Math.min(W - ai.radius, ai.x));
+                ai.y = Math.max(ai.radius, Math.min(H / 2 - ai.radius, ai.y));
+                player.x = Math.max(player.radius, Math.min(W - player.radius, player.x));
+                player.y = Math.max(H / 2 + player.radius, Math.min(H - player.radius, player.y));
+
+                puck.vx *= friction; puck.vy *= friction;
+                puck.x += puck.vx; puck.y += puck.vy;
+
+                let currentSpeed = Math.sqrt(puck.vx*puck.vx + puck.vy*puck.vy);
+                
+                // --- UPGRADE: ANTI-STUCK CORNER MATH ROUTINE ---
+                // If puck drops to absolute zero velocity in the boundaries, push it dynamically outward
+                if (currentSpeed < 0.25) {
+                    let inLeftWall = (puck.x < 35);
+                    let inRightWall = (puck.x > W - 35);
+                    let inTopWall = (puck.y < 35);
+                    let inBottomWall = (puck.y > H - 35);
+
+                    if ((inLeftWall || inRightWall) && (inTopWall || inBottomWall)) {
+                        // Vector calculated toward center of board coordinates
+                        puck.vx += (W / 2 - puck.x) * 0.04;
+                        puck.vy += (H / 2 - puck.y) * 0.04;
+                    }
+                }
+
+                if (currentSpeed > maxPuckSpeed) {
+                    puck.vx = (puck.vx / currentSpeed) * maxPuckSpeed;
+                    puck.vy = (puck.vy / currentSpeed) * maxPuckSpeed;
+                }
+
+                // Wall Collision audio hooks
+                if (puck.x - puck.radius < 0) { puck.x = puck.radius; puck.vx = -puck.vx * wallRestitution; playSound('wall'); }
+                else if (puck.x + puck.radius > W) { puck.x = W - puck.radius; puck.vx = -puck.vx * wallRestitution; playSound('wall'); }
+
+                let gXStart = (W - GOAL_WIDTH) / 2;
+                let gXEnd = gXStart + GOAL_WIDTH;
+
+                if (puck.y - puck.radius < 0) {
+                    if (puck.x > gXStart && puck.x < gXEnd) { scores.p1++; playSound('goal'); updateScore(); if(gameState==='PLAYING') resetTable('p1'); }
+                    else { puck.y = puck.radius; puck.vy = -puck.vy * wallRestitution; playSound('wall'); }
+                } else if (puck.y + puck.radius > H) {
+                    if (puck.x > gXStart && puck.x < gXEnd) { scores.p2++; playSound('goal'); updateScore(); if(gameState==='PLAYING') resetTable('p2'); }
+                    else { puck.y = H - puck.radius; puck.vy = -puck.vy * wallRestitution; playSound('wall'); }
+                }
+
+                checkCollision(player, puck, malletRestitution, true);
+                checkCollision(ai, puck, malletRestitution, false);
             }
 
-            let adx = targetX - ai.x; 
-            let ady = targetY - ai.y;
-            let aDist = Math.sqrt(adx*adx + ady*ady);
-
-            if (aDist > 1) {
-                ai.vx = (adx / aDist) * ai.maxSpeed; 
-                ai.vy = (ady / aDist) * ai.maxSpeed;
-            } else { 
-                ai.vx = 0; 
-                ai.vy = 0; 
-            }
-            ai.x += ai.vx; 
-            ai.y += ai.vy;
-
-            // Track Player delta momentum velocities for precise deflection physics pushes
-            player.vx = mouseX - player.x; 
-            player.vy = mouseY - player.y;
-            player.x = mouseX; 
-            player.y = mouseY;
-
-            // Boundary clamp safety parameters
-            ai.x = Math.max(ai.radius, Math.min(W - ai.radius, ai.x));
-            ai.y = Math.max(ai.radius, Math.min(H / 2 - ai.radius, ai.y));
-            player.x = Math.max(player.radius, Math.min(W - player.radius, player.x));
-            player.y = Math.max(H / 2 + player.radius, Math.min(H - player.radius, player.y));
-
-            puck.vx *= friction; puck.vy *= friction;
-            puck.x += puck.vx; puck.y += puck.vy;
-
-            let currentSpeed = Math.sqrt(puck.vx*puck.vx + puck.vy*puck.vy);
-            if (currentSpeed > maxPuckSpeed) {
-                puck.vx = (puck.vx / currentSpeed) * maxPuckSpeed;
-                puck.vy = (puck.vy / currentSpeed) * maxPuckSpeed;
-            }
-
-            if (puck.x - puck.radius < 0) { puck.x = puck.radius; puck.vx = -puck.vx * wallRestitution; }
-            else if (puck.x + puck.radius > W) { puck.x = W - puck.radius; puck.vx = -puck.vx * wallRestitution; }
-
-            let gXStart = (W - GOAL_WIDTH) / 2;
-            let gXEnd = gXStart + GOAL_WIDTH;
-
-            if (puck.y - puck.radius < 0) {
-                if (puck.x > gXStart && puck.x < gXEnd) { scores.p1++; updateScore(); resetTable('p1'); }
-                else { puck.y = puck.radius; puck.vy = -puck.vy * wallRestitution; }
-            } else if (puck.y + puck.radius > H) {
-                if (puck.x > gXStart && puck.x < gXEnd) { scores.p2++; updateScore(); resetTable('p2'); }
-                else { puck.y = H - puck.radius; puck.vy = -puck.vy * wallRestitution; }
-            }
-
-            checkCollision(player, puck, malletRestitution);
-            checkCollision(ai, puck, malletRestitution);
-
+            // Draw Loop Pipeline (keeps rendering frames in menu background)
             ctx.clearRect(0, 0, internalCanvas.width, internalCanvas.height);
             
             drawArcadeTable();
@@ -467,7 +675,6 @@
             requestAnimationFrame(animate);
         }
 
-        updateScore();
         animate();
     </script>
 </body>
