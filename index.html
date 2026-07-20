@@ -63,7 +63,6 @@
         const pixelCanvas = document.createElement('canvas');
         const pixelCtx = pixelCanvas.getContext('2d');
 
-        // Performance Fix: Hardcoded stable bounds for the 20k pixel grid
         pixelCanvas.width = 160;
         pixelCanvas.height = 120;
 
@@ -72,7 +71,6 @@
             displayCanvas.width = window.innerWidth;
             displayCanvas.height = window.innerHeight;
             
-            // Cap internal workspace to safe HD limits to prevent high-DPI crashes
             internalCanvas.width = Math.min(window.innerWidth, 1920);
             internalCanvas.height = Math.min(window.innerHeight, 1080);
 
@@ -140,6 +138,8 @@
 
         function drawPerspectiveCircle(x, tableY, radius, color) {
             let p = project(x, tableY);
+            if (p.scale <= 0) return; // Horizon clip safety
+
             let rx = radius * p.scale;
             let ry = radius * p.scale * 0.6; 
 
@@ -173,7 +173,8 @@
             ctx.lineCap = 'round';
             confettiParticles.forEach(cp => {
                 let p = project(cp.x, cp.y);
-                if(p.x > -100 && p.x < internalCanvas.width + 100 && p.y > -100 && p.y < internalCanvas.height + 100) {
+                // CRITICAL BUG FIX: Added p.scale > 0 check to prevent negative radius exceptions
+                if(p.scale > 0 && p.x > -100 && p.x < internalCanvas.width + 100 && p.y > -100 && p.y < internalCanvas.height + 100) {
                     ctx.save();
                     ctx.translate(p.x, p.y);
                     ctx.scale(1, 0.6); 
@@ -262,12 +263,16 @@
             ctx.stroke();
 
             let center = project(W / 2, H / 2);
-            ctx.save();
-            ctx.translate(center.x, center.y);
-            ctx.beginPath();
-            ctx.ellipse(0, 0, 70 * center.scale, 70 * center.scale * 0.6, 0, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
+            if (center.scale > 0) {
+                ctx.save();
+                ctx.translate(center.x, center.y);
+                ctx.strokeStyle = '#aaaaaa';
+                ctx.lineWidth = 4 * camZoom;
+                ctx.beginPath();
+                ctx.ellipse(0, 0, 70 * center.scale, 70 * center.scale * 0.6, 0, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.restore();
+            }
 
             let gW = GOAL_WIDTH;
             let gDepth = 15 * camZoom;
@@ -298,7 +303,6 @@
             const canvasX = e.clientX - rect.left;
             const canvasY = e.clientY - rect.top;
 
-            // Mathematical normalization adjustment across scaled resolution boundary
             const normX = canvasX * (internalCanvas.width / displayCanvas.width);
             const normY = canvasY * (internalCanvas.height / displayCanvas.height);
 
